@@ -4,6 +4,7 @@
 # To view a copy of this license, visit
 # https://nvlabs.github.io/stylegan2/license.html
 
+import time
 import argparse
 import numpy as np
 import PIL.Image
@@ -34,6 +35,58 @@ def generate_images(network_pkl, seeds, truncation_psi):
         tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
         images = Gs.run(z, None, **Gs_kwargs) # [minibatch, height, width, channel]
         PIL.Image.fromarray(images[0], 'RGB').save(dnnlib.make_run_dir_path('seed%04d.png' % seed))
+
+#----------------------------------------------------------------------------
+
+def bench_genimg(network_pkl, seeds, truncation_psi):
+    print('Loading networks from "%s"...' % network_pkl)
+    _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
+    noise_vars = [var for name, var in Gs.components.synthesis.vars.items() if name.startswith('noise')]
+
+    Gs_kwargs = dnnlib.EasyDict()
+    Gs_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+    Gs_kwargs.randomize_noise = False
+    if truncation_psi is not None:
+        Gs_kwargs.truncation_psi = truncation_psi
+
+    start_time = time.time()
+    for seed_idx, seed in enumerate(seeds):
+        print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
+        rnd = np.random.RandomState(seed)
+        z = rnd.randn(1, *Gs.input_shape[1:]) # [minibatch, component]
+        tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
+        images = Gs.run(z, None, **Gs_kwargs) # [minibatch, height, width, channel]
+        #PIL.Image.fromarray(images[0], 'RGB').save(dnnlib.make_run_dir_path('seed%04d.png' % seed))
+    end_time = time.time()
+    print('Total time:', end_time - start_time)
+
+#----------------------------------------------------------------------------
+
+def interpolation_example(network_pkl, src_seeds, tar_seeds, truncation_psi):
+    assert len(src_seeds) == len(tar_seeds)
+
+    print('Loading networks from "%s"...' % network_pkl)
+    _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
+    noise_vars = [var for name, var in Gs.components.synthesis.vars.items() if name.startswith('noise')]
+
+    Gs_kwargs = dnnlib.EasyDict()
+    Gs_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+    Gs_kwargs.randomize_noise = False
+    if truncation_psi is not None:
+        Gs_kwargs.truncation_psi = truncation_psi
+
+    l = len(src_seeds)
+    for seed_idx, (seed0, seed1) in enumerate(zip(src_seeds, tar_seeds)):
+        print('Generating images for seeds %d and %d (%d/%d) ...' % (seed0, seed1, seed_idx + 1, l))
+        rnd0 = np.random.RandomState(seed0)
+        rnd1 = np.random.RandomState(seed1)
+        z0 = rnd0.randn(1, *Gs.input_shape[1:]) # [minibatch, component]
+        z1 = rnd1.randn(1, *Gs.input_shape[1:]) # [minibatch, component]
+        tflib.set_vars({var: rnd0.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
+        for prog, z in enumerate(np.linspace(z0, z1, 150)):
+            print(f"{prog + 1}/150\r", end='')
+            images = Gs.run(z, None, **Gs_kwargs) # [minibatch, height, width, channel]
+            PIL.Image.fromarray(images[0], 'RGB').save(dnnlib.make_run_dir_path('int%04d-%04d-%03d.png' % (seed0, seed1, prog)))
 
 #----------------------------------------------------------------------------
 
@@ -133,6 +186,12 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
     parser_generate_images.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
     parser_generate_images.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
 
+    parser_bench= subparsers.add_parser('bench', help='Benchmark generate images')
+    parser_bench.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
+    parser_bench.add_argument('--seeds', type=_parse_num_range, help='List of random seeds', required=True)
+    parser_bench.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
+    parser_bench.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
+
     parser_style_mixing_example = subparsers.add_parser('style-mixing-example', help='Generate style mixing video')
     parser_style_mixing_example.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
     parser_style_mixing_example.add_argument('--row-seeds', type=_parse_num_range, help='Random seeds to use for image rows', required=True)
@@ -140,6 +199,13 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
     parser_style_mixing_example.add_argument('--col-styles', type=_parse_num_range, help='Style layer range (default: %(default)s)', default='0-6')
     parser_style_mixing_example.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
     parser_style_mixing_example.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
+
+    parser_interpolation_example = subparsers.add_parser('interpolation-example', help='Generate interpolation video')
+    parser_interpolation_example.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
+    parser_interpolation_example.add_argument('--src-seeds', type=_parse_num_range, help='Random seeds to use for source images', required=True)
+    parser_interpolation_example.add_argument('--tar-seeds', type=_parse_num_range, help='Random seeds to use for target images', required=True)
+    parser_interpolation_example.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
+    parser_interpolation_example.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
 
     args = parser.parse_args()
     kwargs = vars(args)
@@ -158,7 +224,9 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
 
     func_name_map = {
         'generate-images': 'run_generator.generate_images',
-        'style-mixing-example': 'run_generator.style_mixing_example'
+        'style-mixing-example': 'run_generator.style_mixing_example',
+        'interpolation-example': 'run_generator.interpolation_example',
+        'bench': 'run_generator.bench_genimg'
     }
     dnnlib.submit_run(sc, func_name_map[subcmd], **kwargs)
 
